@@ -42,7 +42,7 @@ the command by sending the command to Tegu's ReST HTTP API.
 \fItegu_xapi\fP will normally be run on the same machine as the running Tegu system,
 however it can be run on a different machine if the \fB-h\fP option is used.
 .P
-Groups are used to define sets of neutron ports that are to be used interchangably (for
+Groups are used to define sets of neutron ports that are to be used interchangeably (for
 example, as \fImiddleboxes\fP in a flow steering chain.
 Groups are a logical construct, and do not have a presence in the network until a chain
 that uses the group becomes active.
@@ -64,7 +64,7 @@ host than localhost:29444
 .TP 8
 .B \-I or \--id
 Print only object ID's from the returned JSON, rather than the full JSON (in create and list operations).
-This is useful if a newly created object must be referenced in a subsequent operation.
+This is useful if a newly created object must be referenced by UUID in a subsequent operation.
 .TP 8
 .B \-t or \--token token
 Provide the keystone token to be passed to Tegu.
@@ -90,10 +90,10 @@ Specify a start time for a chain-create or chain-update command.
 Specify an end time for a chain-create or chain-update command.
 .TP 8
 .B \--classifiers list
-Specify a list of flow classifier IDs for a chain-create or chain-update command.
+Specify a space separated list of flow classifier UUIDs for a chain-create or chain-update command.
 .TP 8
 .B \--groups list
-Specify a list of group IDs for a chain-create or chain-update command.
+Specify an ordered, space separated list of group UUIDs for a chain-create or chain-update command.
 .TP 8
 .B \--protocol proto
 Specify the (numeric) IP protocol for an fc-create command.
@@ -105,73 +105,134 @@ Specify the (numeric) source port for an fc-create command.
 Specify the (numeric) destination port for an fc-create command.
 .TP 8
 .B \--source-ip-address ip
-Specify the source IP address for an fc-create command.
+Specify the source IP address or CIDR for an fc-create command.
+Both IPv4 and IPv6 are supported.
 .TP 8
 .B \--destination-ip-address ip
-Specify the destination IP address for an fc-create command.
+Specify the destination IP address or CIDR for an fc-create command.
+Both IPv4 and IPv6 are supported.
 .TP 8
 .B \--subnet-id subnet
-Specify the subnet ID to use for group-create
+Specify the subnet UUID to use for group-create.
 .TP 8
 .B \--port-specs specs
 Specify the port specifications to use for group-create or group-update commands.
+See group-create below for a definition of what is allowed for a port specification.
 
 .SH COMMANDS
-The command that Tegu should run is one of the following.
-
+The command that tegu_xapi supports is one of the following:
 .SS Group Commands
 .TP 8
 .B group-create
-TODO fill in
+This command causes a group of ports to be defined and potentially named.
+The ports must all exist on the same subnet.
+The --subnet-id option is required (in order to provide the subnet's UUID).
+The --port-specs option is required in order to define the ports in the group.
+The argument to --port-specs is a space separated list of port specifications, each of
+which may be (a) a neutron port UUID, (b) a MAC address that uniquely identifies the port,
+(c) an IPv4 or IPv6 address that uniquely identifies the port, or (d) [NOT IMPLEMENTED]
+a nova VM name for a VM that is attached to only one port.
+On successful completion, a JSON string defining the new group is displayed, unless the
+--id option was used in which case only the UUID of the newly defined group is printed.
 .TP 8
 .B group-update
-TODO fill in
+This command causes various attributes of the named group to be updated.
+The three attributes that can be modified are the name (--name), description (--description),
+and port list (--port-specs).
+Changing the list of ports in a group will cause any active chains that are using the
+group to be updated in real time.
 .TP 8
 .B group-show
 Show details about the group identified by \fIobjectid\fP.
 The group is displayed in JSON form.
 .TP 8
 .B group-delete
-TODO fill in
+This command causes the named group to be deleted.
+If the group is currently being used by a chain, it cannot be deleted until
+the chain is deleted.
 .TP 8
 .B group-list
-TODO fill in
+This command causes a list of the existing groups for the tenant to be displayed.
+The name, ID, and URL for each group is displayed.
+If the optional --id argument is used, then only a list of IDs is printed.
 
 .SS Flow Classifier Commands
 .TP 8
 .B fc-create
-TODO fill in
+This command is used to specify a flow classifier, which defines what traffic should be flow steered through a chain.
+The --protocol, --source-port, --destination-port, --source-ip-address, and
+--destination-ip-address options are used to define the flow.
+If no --protocol option is used, the default protocol is 6 (TCP).
+At least one source or destination ip address or CIDR must be specified.
+If source and/or destination ports are used, the protocol must be 6 (TCP), 17 (UDP), or 132 (SCTP).
+The flow classifier (and chain) does not concern itself as to whether such traffic could
+actually flow between the port groups specified in a chain; e.g. it does not care if the
+ports are for different ip addresses/ranges than the specifier addresses.
 .TP 8
 .B fc-update
-TODO fill in
+This command causes various attributes of the named flow classifier to be updated.
+The two attributes that can be modified are the name (--name), and description (--description).
 .TP 8
 .B fc-show
 Show details about the flow classifier identified by \fIobjectid\fP.
 The flow classifier is displayed in JSON form.
 .TP 8
 .B fc-delete
-TODO fill in
+This command causes the named flow classifier to be deleted.
+If the flow classifier is currently being used by a chain, it cannot be deleted until
+the chain is deleted.
 .TP 8
 .B fc-list
-TODO fill in
+This command causes a list of the existing flow classifiers for the tenant to be displayed.
+The name, ID, and URL for each flow classifier is displayed.
+If the optional --id argument is used, then only a list of IDs is printed.
 
 .SS Chaining Commands
 .TP 8
 .B chain-create
-TODO fill in
+This commands creates a flow steering chain.
+The chain has a start time (--start-time) and end time (--end-time), which define the time
+interval during which the chain shall be installed in the network.
+If no start time is defined, the default start time is "now."
+If no end time is defined, the end time will be the same as the start time.
+This is useful if, for example, you want to define a chain and activate it later (via chain-update).
+At least one flow classifier must be provided via the --classifiers option.
+This defines what traffic is to be steered through the chain.
+At least one group must be provided via the --groups option.
+This defines where the traffic is to be steered in the chain, as well as the order that thr groups
+should be used (the list provided is an ordered list).
+The chain will steer the traffic first via a port listed in the first group, then via a port
+in the second group, and so on.
+The groups specified via this option are not allowed to overlap; that is, a port cannot be
+a member of more than one group used in a chain.
+Before creation, an overlap check is performed.
+If the chain would cause conflict with another chain in the system,
+either spatially (two or more chains using conflicting flow classifiers during overlapping
+time periods), or temporally (two or more chains using the same flow classifiers during overlapping
+time periods), then the chain will not be created.
 .TP 8
 .B chain-update
-TODO fill in
+This command causes various attributes of the named chain to be updated.
+The attributes that can be modified are the name (--name), description (--description),
+the start and end times (--start-time/--end-time).
+If any changes to the chain would cause the chain to conflict with another chain in the system,
+either spatially (two or more chains using conflicting flow classifiers during overlapping
+time periods), or temporally (two or more chains using the same flow classifiers during overlapping
+time periods), then the update is disallowed.
 .TP 8
 .B chain-show
 Show details about the chain identified by \fIobjectid\fP.
 The chain is displayed in JSON form.
 .TP 8
 .B chain-delete
-TODO fill in
+This command causes the named chain to be deleted.
+If the chain is currently active, it cannot be deleted until it expires (the \fIend_time\fP is
+reached), or until it is modified to make it inactive.
 .TP 8
 .B chain-list
-TODO fill in
+This command causes a list of the existing chains for the tenant to be displayed.
+The name, ID, and URL for each chain is displayed.
+If the optional --id argument is used, then only a list of IDs is printed.
 
 .SH ENVIRONMENT
 .TP 15
@@ -187,4 +248,4 @@ OS_AUTH_URL
 This OpenStack environment variables specifies the URL to use when contacting Keystone.
 
 .SH SEE ALSO
-curl(1), rjprt(1), tegu_req(1), tegu.cfg(5), tegu(8)
+curl(1), openstack(1), tegu_req(1), tegu.cfg(5), tegu(8)
