@@ -15,15 +15,16 @@
 #   limitations under the License.
 # ----------------------------------------------------------------------------------------
 #
-#	Mnemonic:	sfs - Scalable flow steering
+#	Mnemonic:	tegu_sfs - Scalable flow steering
 #	Abstract: 	This script takes a data file outlining a scalable flow-steering request
-#				and generates a custom script to implement that request, including OVS
-#				statements to both add and remove the flows from each affected physical
-#				node, as well as a section containing neutron port-update commands to allow
-#				middleboxes to spoof IP addresses.
-#  
+#                       and generates a custom script to implement that request, including OVS
+#                       commands to both add and remove the flows from each affected physical
+#                       nodes' "br-int" bridge.
+#
 #	Date:		10 Jul 2015
 #	Author:		Robert Eby
+#
+#	Mods:		07 Oct 2015 - Fixed a problem in genMiddleBoxFlows.
 #
 # ----------------------------------------------------------------------------------------
 
@@ -35,7 +36,7 @@ priority=600			# priority should be higher than bandwidth fmods (501),
 			# right now it is fixed
 lfm_timeout=300			# timeout for learned flow-mods
 fmod_timeout=300		# the timeout for the general rule that causes steering
-verbose=trace
+verbose=:
 
 # ------------------------- Function Definitions -------------------------
 
@@ -72,6 +73,7 @@ function getportuuid
 #
 #  Generate the flow rules needed to go from port A to ports B(1), B(2), ... B(n)
 #  inport and physhost refer to the port on the switch and the physical machine where port A is located
+#  This is used on the originating box(es) in the flow.
 #
 #      +-- B(1)
 #  A --+-- B(2)
@@ -91,19 +93,19 @@ function genOutboundFlows
 		if [ -n "$preamble" ]
 		then
 			echo "${hard_to}table=89,cookie=0xabcd,$SFS_RULES,priority=0,action=write_metadata:0x08/0x08"
-			## echo "${hard_to}cookie=0xabcd,tcp_flags=+syn,$SFS_RULES,metadata=0x00/0x0f,priority=901,action=set_field:0x1->metadata,resubmit(,98),resubmit(,89),resubmit(,0)"
 			echo "${hard_to}cookie=0xabcd,$SFS_RULES,metadata=0x00/0x0f,priority=900,action=set_field:0x1->metadata,resubmit(,89),resubmit(,0)"
 		fi
+		# Set up table 99 - used to forward to the next middlebox
 		for mac in $macs
 		do
 			cmac=$(echo $mac | tr -d : )
-			learn="learn(cookie=0xfade,table=89,priority=$priority,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_RULES,NXM_OF_TCP_SRC[],load:0x$cmac->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
+			learn="learn(cookie=0xfade,table=89,priority=$priority,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_RULES,$SFS_XRULES,load:0x$cmac->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
 			echo "${hard_to}table=99,cookie=0xdaff,in_port=$inport,$SFS_RULES,reg0=$nmbox,priority=$priority,action=$learn,mod_dl_dst:$mac"
 			nmbox=$(( nmbox + 1 ))
 		done
 		if (( nmbox != 0 ))
 		then
-			echo "${hard_to}cookie=0xabcd,in_port=$inport,$SFS_RULES,metadata=0x09/0x0f,priority=600,action=set_field:0x02->metadata,multipath(symmetric_l4,1024,hrw,$nmbox,0,NXM_NX_REG0[]),resubmit(,99),resubmit(,0)"
+			echo "${hard_to}cookie=0xabcd,in_port=$inport,$TCPFLAGS$SFS_RULES,metadata=0x09/0x0f,priority=600,action=set_field:0x02->metadata,multipath(symmetric_l4,1024,hrw,$nmbox,0,NXM_NX_REG0[]),resubmit(,99),resubmit(,0)"
 		fi
 	) >> $PFX$physhost
 	echo $PFX$physhost >> $LISTFILE
@@ -112,6 +114,7 @@ function genOutboundFlows
 #
 #  Generate the flow rules needed to do the return flow from port Z to ports B(1), B(2), ... B(n)
 #  inport and physhost refer to the port on the switch and the physical machine where port Z is located
+#  This is used on the terminating box(es) in the flow.
 #
 #  B(1) --+
 #  B(2) --+-- Z
@@ -125,9 +128,9 @@ function genReturnFlows
 	nmbox=0
 	preamble=
 	(
-		echo "${hard_to}cookie=0xabcd,tcp_flags=+syn,$SFS_RULES,metadata=0x00/0x0f,priority=901,action=set_field:0x1->metadata,resubmit(,98),resubmit(,0)"
+		echo "${hard_to}cookie=0xabcd,$TCPFLAGS$SFS_RULES,metadata=0x00/0x0f,priority=901,action=set_field:0x1->metadata,resubmit(,98),resubmit(,0)"
 		echo "${hard_to}cookie=0xabcd,in_port=$inport,$SFS_REV_RULES,metadata=0x00/0x0f,priority=900,action=set_field:0x1->metadata,resubmit(,89),resubmit(,0)"
-		echo "table=98,cookie=0xdada,$SFS_RULES,priority=600,action=learn(cookie=0xfade,table=89,priority=600,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_REV_RULES,NXM_OF_TCP_DST[]=NXM_OF_TCP_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
+		echo "table=98,cookie=0xdada,$SFS_RULES,priority=600,action=learn(cookie=0xfade,table=89,priority=600,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_REV_RULES,$SFS_XREV_RULES,load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
 	) >> $PFX$physhost
 	echo $PFX$physhost >> $LISTFILE
 }
@@ -135,6 +138,7 @@ function genReturnFlows
 #
 #  Generate the flow rules needed for a middlebox, where there are both "forward" flows
 #  from port A to ports B(1), B(2), ... B(n), and return flows from port A to ports Q(1), Q(2), ... Q(n)
+#  This is used on all middle boxes in the flow.
 #
 #  Q(1) --+       +-- B(1)
 #  Q(2) --+-- A --+-- B(2)
@@ -145,69 +149,48 @@ function genMiddleBoxFlows
 	$verbose genMiddleBoxFlows $*
 	inport=$1
 	physhost=$2
-	macs="$3"
+	macs="$3"		# B(1) .. B(n)
+	imacs="$4"		# Q(1) .. Q(n)
 	nmbox=0
-	preamble=
+	preamble=xx		# always generate the preamble!
 	[ -s $PFX$physhost ] || preamble=1
 
 	(
 		if [ -n "$preamble" ]
 		then
 			echo "${hard_to}table=89,cookie=0xabcd,$SFS_RULES,priority=0,action=write_metadata:0x08/0x08"
-			##  echo "${hard_to}cookie=0xabcd,tcp_flags=+syn,$SFS_RULES,metadata=0x00/0x0f,priority=901,action=set_field:0x1->metadata,resubmit(,98),resubmit(,89),resubmit(,0)"
+			echo "${hard_to}cookie=0xabcd,$TCPFLAGS$SFS_RULES,metadata=0x00/0x0f,priority=901,action=set_field:0x1->metadata,resubmit(,98),resubmit(,89),resubmit(,0)"
 			echo "${hard_to}cookie=0xabcd,$SFS_RULES,metadata=0x00/0x0f,priority=900,action=set_field:0x1->metadata,resubmit(,89),resubmit(,0)"
 		fi
 		echo "${hard_to}cookie=0xabcd,in_port=$inport,$SFS_REV_RULES,metadata=0x00/0x0f,priority=900,action=set_field:0x1->metadata,resubmit(,89),resubmit(,0)"
-		for mac in $macs
+		# Set up table 98 - used to save reverse route back to previous middlebox
+		for imac in $imacs
 		do
-			cmac=$(echo $mac | tr -d : )
-			learn="learn(cookie=0xfade,table=89,priority=$priority,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_RULES,NXM_OF_TCP_SRC[],load:0x$cmac->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
-			learn2="learn(cookie=0xfade,table=89,priority=$priority,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_REV_RULES,NXM_OF_TCP_DST[]=NXM_OF_TCP_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
-			echo "${hard_to}table=99,cookie=0xdaff,in_port=$inport,$SFS_RULES,reg0=$nmbox,priority=$priority,action=$learn,$learn2,mod_dl_dst:$mac"
-			nmbox=$(( nmbox + 1 ))
+			# need one per input mac because we only want the learn rule to fire when the packet comes into the middlebox, not when it leaves
+			cimac=$(echo $imac | tr -d : )
+			learn="learn(cookie=0xfade,table=89,priority=600,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_REV_RULES,$SFS_XREV_RULES,load:0x$cimac->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
+			echo "table=98,cookie=0xdada,$SFS_RULES,dl_src=$imac,priority=$priority,action=$learn"
 		done
-		if (( nmbox != 0 ))
-		then
-			echo "${hard_to}cookie=0xabcd,in_port=$inport,$SFS_RULES,metadata=0x09/0x0f,priority=600,action=set_field:0x02->metadata,multipath(symmetric_l4,1024,hrw,$nmbox,0,NXM_NX_REG0[]),resubmit(,99),resubmit(,0)"
-		fi
-	) >> $PFX$physhost
-	echo $PFX$physhost >> $LISTFILE
-}
-
-function genMiddleBoxFlowsOLD
-{
-	$verbose genMiddleBoxFlows $*
-	inport=$1
-	physhost=$2
-	macs="$3"
-	nmbox=0
-	preamble=
-	[ -s $PFX$physhost ] || preamble=1
-
-	(
-		if [ -n "$preamble" ]
-		then
-			echo "${hard_to}table=89,cookie=0xabcd,$SFS_RULES,priority=0,action=write_metadata:0x08/0x08"
-			echo "${hard_to}cookie=0xabcd,tcp_flags=+syn,$SFS_RULES,metadata=0x00/0x0f,priority=901,action=set_field:0x1->metadata,resubmit(,98),resubmit(,89),resubmit(,0)"
-			echo "${hard_to}cookie=0xabcd,$SFS_RULES,metadata=0x00/0x0f,priority=900,action=set_field:0x1->metadata,resubmit(,89),resubmit(,0)"
-		fi
-		echo "${hard_to}cookie=0xabcd,in_port=$inport,$SFS_REV_RULES,metadata=0x00/0x0f,priority=900,action=set_field:0x1->metadata,resubmit(,89),resubmit(,0)"
-		echo "table=98,cookie=0xdada,$SFS_RULES,priority=600,action=learn(cookie=0xfade,table=89,priority=600,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_REV_RULES,NXM_OF_TCP_DST[]=NXM_OF_TCP_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
+		# Set up table 99 - used to forward to the next middlebox
 		for mac in $macs
 		do
 			cmac=$(echo $mac | tr -d : )
-			learn="learn(cookie=0xfade,table=89,priority=$priority,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_RULES,NXM_OF_TCP_SRC[],load:0x$cmac->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
+			learn="learn(cookie=0xfade,table=89,priority=$priority,idle_timeout=300,hard_timeout=300,in_port=$inport,$SFS_RULES,$SFS_XRULES,load:0x$cmac->NXM_OF_ETH_DST[],load:0xff->NXM_NX_REG0[])"
 			echo "${hard_to}table=99,cookie=0xdaff,in_port=$inport,$SFS_RULES,reg0=$nmbox,priority=$priority,action=$learn,mod_dl_dst:$mac"
 			nmbox=$(( nmbox + 1 ))
 		done
 		if (( nmbox != 0 ))
 		then
-			echo "${hard_to}cookie=0xabcd,in_port=$inport,$SFS_RULES,metadata=0x09/0x0f,priority=600,action=set_field:0x02->metadata,multipath(symmetric_l4,1024,hrw,$nmbox,0,NXM_NX_REG0[]),resubmit(,99),resubmit(,0)"
+			echo "${hard_to}cookie=0xabcd,in_port=$inport,$TCPFLAGS$SFS_RULES,metadata=0x09/0x0f,priority=600,action=set_field:0x02->metadata,multipath(symmetric_l4,1024,hrw,$nmbox,0,NXM_NX_REG0[]),resubmit(,99),resubmit(,0)"
 		fi
 	) >> $PFX$physhost
 	echo $PFX$physhost >> $LISTFILE
 }
 
+#
+#  Generate flows that will work in both directions; e.g. the forward flow is remembered so that
+#  the reverse flow traverses the same boxes in reverse order.
+#
 function genflows
 {
 	$verbose genflows $*
@@ -238,22 +221,26 @@ function genflows
 				genReturnFlows $port $phost
 			done
 		else
+			prv=${arr[i-1]}
 			cur=${arr[i]}
 			nxt=${arr[i+1]}
 			maclist="$(macaddrlist $nxt)"
+			pmaclist="$(macaddrlist $prv)"
 			for mac in $(macaddrlist $cur)
 			do
 				port=$(mac2port $mac)
 				phost=$(physhost $mac)
-				genMiddleBoxFlows $port $phost "$maclist"
+				genMiddleBoxFlows $port $phost "$maclist" "$pmaclist"
 			done
 		fi
 		i=$((i + 1))
 	done
 }
 
+#
 # Generate all the flow statements for one direction ($1 => $2)
 # using middlebox sets in the order specified in $3
+#
 function gen1wayflows
 {
 	$verbose gen1wayflows $*
@@ -290,11 +277,16 @@ CHAIN=$(echo $1 | sed -e 's/.*tegu.sfs.//' -e 's/.data//' )
 rm -f ${PFX}*
 
 # Check input
-if [ -z "$SFS_RULES" ]
-then
+TCPFLAGS=""
+case "$SFS_RULES" in
+*nw_proto=6,*)
+	TCPFLAGS="tcp_flags=+syn,"
+	;;
+"")
 	echo "Need to set $SFS_RULES in the input file."
 	exit 1
-fi
+	;;
+esac
 
 # Generate flow statements into separate files (one per phost)
 if [ "$SFS_ONEWAY" == "true" ]
@@ -369,7 +361,7 @@ do
 	echo then
 	echo sudo ovs-vsctl set bridge br-int protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
 	echo sudo ovs-ofctl -O OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13 add-flow br-int - '<<EOF'
-	sed 's/.*br-int //' < $i
+	cat $i
 	echo EOF
 	echo "echo Added flow rules to $pnode for $CHAIN at \$(date) | tee -a /tmp/tegu_sfs.log"
 	echo fi

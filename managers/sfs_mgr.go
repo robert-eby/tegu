@@ -315,7 +315,7 @@ func buildDataFile(req *gizmos.Chain, file string ) (err error) {
 	if err != nil {
 		return
 	}
-	rules, revrules, err := fc.BuildOvsRules()
+	rules, revrules, xrules, xrevrules, err := fc.BuildOvsRules()
 	if err != nil {
 		return
 	}
@@ -342,6 +342,8 @@ func buildDataFile(req *gizmos.Chain, file string ) (err error) {
 	bs.WriteString("#----------------------------------------------------------------------------------------------\n")
 	bs.WriteString("SFS_RULES='" + rules + "'\n")
 	bs.WriteString("SFS_REV_RULES='" + revrules + "'\n")
+	bs.WriteString("SFS_XRULES='" + xrules + "'\n")
+	bs.WriteString("SFS_XREV_RULES='" + xrevrules + "'\n")
 	bs.WriteString("SFS_ONEWAY=false\n")
 	if expiration <= ONEYEAR {
 		// If > 1 year, then we must manually remove the chain from OVS

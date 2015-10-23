@@ -212,14 +212,19 @@ func (p *FlowClassifier) getDLType() (rv string, err error) {
 /*
 	Build the OVS flow rules to implement this classifier.
 	See ovs-ofctl(8) for what all of this means.
-	Two sets of rules are constructed, rules (used for flows in the forward direction),
-	and revrules (for the reverse direction).
+	Four sets of rules are constructed:
+	1. rules (used for flows in the forward direction),
+	2. revrules (for flows in the reverse direction),
+	3. xrules (extra rules used for learned flows)
+	4. xrevrules (extra rules used for learned reverse flows)
 */
-func (p *FlowClassifier) BuildOvsRules() (rules string, revrules string, err error) {
+func (p *FlowClassifier) BuildOvsRules() (rules string, revrules string, xrules string, xrevrules string, err error) {
 	dlt, err := p.getDLType()
 	if err == nil {
 		fbs := bytes.NewBufferString(fmt.Sprintf("dl_type=%s", dlt))
 		rbs := bytes.NewBufferString(fmt.Sprintf("dl_type=%s", dlt))
+		fbx := bytes.NewBufferString("")
+		rbx := bytes.NewBufferString("")
 		if p.Protocol != 0 {
 			fbs.WriteString(fmt.Sprintf(",nw_proto=%d", p.Protocol))
 			rbs.WriteString(fmt.Sprintf(",nw_proto=%d", p.Protocol))
@@ -228,25 +233,57 @@ func (p *FlowClassifier) BuildOvsRules() (rules string, revrules string, err err
 			b := IsIPv4(p.Source_ip)
 			fbs.WriteString(fmt.Sprintf(",%s=%s", choose(b, "nw_src", "ipv6_src"), p.Source_ip))
 			rbs.WriteString(fmt.Sprintf(",%s=%s", choose(b, "nw_dst", "ipv6_dst"), p.Source_ip))
+		} else {
+			fbx.WriteString(",NXM_OF_IP_SRC[]")
+			rbx.WriteString(",NXM_OF_IP_DST[]=NXM_OF_IP_SRC[]")
 		}
 		if p.Dest_ip != "" {
 			b := IsIPv4(p.Dest_ip)
 			fbs.WriteString(fmt.Sprintf(",%s=%s", choose(b, "nw_dst", "ipv6_dst"), p.Dest_ip))
 			rbs.WriteString(fmt.Sprintf(",%s=%s", choose(b, "nw_src", "ipv6_src"), p.Dest_ip))
+		} else {
+			fbx.WriteString(",NXM_OF_IP_DST[]")
+			rbx.WriteString(",NXM_OF_IP_SRC[]=NXM_OF_IP_DST[]")
 		}
 		protoname := mapProtoToName(p.Protocol)
 		if protoname != "" {
 			if p.Source_port != 0 {
 				fbs.WriteString(fmt.Sprintf(",%s_%s=%d", protoname, "src", p.Source_port))
 				rbs.WriteString(fmt.Sprintf(",%s_%s=%d", protoname, "dst", p.Source_port))
+			} else {
+				if protoname == "tcp" {
+					fbx.WriteString(",NXM_OF_TCP_SRC[]")
+					rbx.WriteString(",NXM_OF_TCP_DST[]=NXM_OF_TCP_SRC[]")
+				}
+				if protoname == "udp" {
+					fbx.WriteString(",NXM_OF_UDP_SRC[]")
+					rbx.WriteString(",NXM_OF_UDP_DST[]=NXM_OF_UDP_SRC[]")
+				}
 			}
 			if p.Dest_port != 0 {
 				fbs.WriteString(fmt.Sprintf(",%s_%s=%d", protoname, "dst", p.Dest_port))
 				rbs.WriteString(fmt.Sprintf(",%s_%s=%d", protoname, "src", p.Dest_port))
+			} else {
+				if protoname == "tcp" {
+					fbx.WriteString(",NXM_OF_TCP_DST[]")
+					rbx.WriteString(",NXM_OF_TCP_SRC[]=NXM_OF_TCP_DST[]")
+				}
+				if protoname == "udp" {
+					fbx.WriteString(",NXM_OF_UDP_DST[]")
+					rbx.WriteString(",NXM_OF_UDP_SRC[]=NXM_OF_UDP_DST[]")
+				}
 			}
 		}
-		rules    = fbs.String()
-		revrules = rbs.String()
+		rules     = fbs.String()
+		revrules  = rbs.String()
+		xrules    = fbx.String()
+		xrevrules = rbx.String()
+		if len(xrules) > 0 {
+			xrules = xrules[1:]
+		}
+		if len(xrevrules) > 0 {
+			xrevrules = xrevrules[1:]
+		}
 	//	Source_Nport string	 	`json:"source_neutron_port"`// read only
 	//	Dest_Nport	string 	 	`json:"dest_neutron_port"`	// read only
 	}

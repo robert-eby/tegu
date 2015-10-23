@@ -151,14 +151,14 @@ func fc_api_post( in *http.Request, tenant_id string, data []byte ) (code int, m
 		}
 	}
 	if req.Source_ip != "" {
-		err = validateIpAddress(req.Source_ip)
+		err = validateIpAddressOrCIDR(req.Source_ip)
 		if err != nil {
 			msg = err.Error()
 			return
 		}
 	}
 	if req.Dest_ip != "" {
-		err = validateIpAddress(req.Dest_ip)
+		err = validateIpAddressOrCIDR(req.Dest_ip)
 		if err != nil {
 			msg = err.Error()
 			return
@@ -325,10 +325,17 @@ func fc_api_delete( in *http.Request, tenant_id string, data []byte ) (code int,
 	return
 }
 
-func validateIpAddress( s string ) ( error ) {
-	ip := net.ParseIP( s )
-	if ip == nil {
-		return fmt.Errorf( "%s is not a valid IP address", s )
+func validateIpAddressOrCIDR( cidr string ) ( error ) {
+	if strings.Index( cidr, "/" ) >= 0 {
+		_, _, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf( "%s is not a valid CIDR", cidr )
+		}
+	} else {
+		ip := net.ParseIP( cidr )
+		if ip == nil {
+			return fmt.Errorf( "%s is not a valid IP address", cidr )
+		}
 	}
 	return nil
 }
